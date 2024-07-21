@@ -1,0 +1,113 @@
+---
+title: "London Crime Map"
+execute:
+  warning: false
+  message: false
+knitr:
+  opts_chunk: 
+    collapse: true
+    comment: "#>"
+format:
+  html:
+    toc: true
+    html-math-method: katex
+    code-fold: true
+    css: styles.css
+editor_options: 
+  chunk_output_type: console
+---
+
+## Set Up
+```{r setting}
+#--Install / load packages
+rm(list = ls())
+pacman::p_load(sf, here, tmap, osmdata, tidyverse, data.table, rio, tidyverse, flextable, mapview, units, spdep, deldir, sp, rgeoda, leaflet, viridis, crosstalk, leaflet.extras, plotly)
+#--Import street-level crime data
+crime <- readRDS(here("3_output", "crime_ldn_2023-06_2024-05.RDS")) |>
+    dplyr::mutate(category = stringr::str_replace_all(category, "-", " ")) |>
+    sf::st_as_sf(coords = c("location.longitude", "location.latitude"), crs = 4326, dim = "XY") |>
+    mutate(date = ym(month))
+    #from 2023-06 to 2024-05
+
+#--Import boundary 
+ldn <- st_read(here("1_data", "9_geo", "London_Borough_Excluding_MHW.shp")) |>
+    st_transform(4326)
+
+#--Create sh_crime
+sh_crime <- SharedData$new(crime)
+```
+
+## Spatio-Temporal Distribution of Crimes by Category
+### Map by Category
+```{r m_eda}
+#--Assign colour palette
+n_pal <- length(unique(crime$category))
+crime_pal <- leaflet::colorFactor(turbo(n_pal), crime$category)
+
+#--Create filters
+month_slider <- crosstalk::filter_slider("date", "Date", sh_crime, ~date, width = "100%")
+category_checkbox <- crosstalk::filter_checkbox("category", "Category", sh_crime, ~category)
+
+#--Create map
+m_eda <- leaflet(sh_crime) |>
+  leaflet::addProviderTiles("CartoDB.Positron")|>
+  leaflet::addCircleMarkers(color = ~crime_pal(category), radius = 2) |>
+  leaflet::addLegend("bottomright", pal = crime_pal, values = ~category, title = "Category")
+
+#--Pull everything together
+crosstalk::bscols(
+  widths = c(12, 3, 9),
+  month_slider,
+  category_checkbox,
+  m_eda
+)
+```
+
+### Trend by Category
+```{r}
+#--Create timeseries data by category
+ct_crime <- crime |>
+    st_drop_geometry() |>
+    group_by(category, date) |>
+    tally() |>
+    arrange(desc(n))
+
+#--Create sh_crime
+sh_crime_ct <- SharedData$new(ct_crime)
+
+#--Create filter
+month_slider_ct <- crosstalk::filter_slider("date", "Date", sh_crime_ct, ~date, step = 1, width = "100%")
+
+#--Trend plot
+pl_trend <- plotly::plot_ly(sh_crime_ct, x = ~date, y = ~n, color = ~category, colors = viridis_pal(option = "H")(14)) |>
+  plotly::add_lines() |>
+  plotly::layout(xaxis = list(title = ""),
+                 yaxis = list(title = "Number of Crimes\n"))
+
+#--Pull everything together
+crosstalk::bscols(
+  widths = c(12, 12),
+  month_slider_ct,
+  pl_trend
+)
+```
+
+### Overall Frequency
+#### In the last 12 months
+```{r}
+#--Create count data by category
+ct_crime2 <- crime |>
+    st_drop_geometry() |>
+    group_by(category) |>
+    tally() |>
+    arrange(desc(n)) 
+
+#--Frequency plot
+pl_freq <- plot_ly(ct_crime2, x = ~stats::reorder(category, n, decreasing = TRUE), y = ~n, color = ~category, colors = viridis_pal(option = "H")(14)) |>
+  plotly::add_bars()|>
+  plotly::layout(xaxis = list(title = ""),
+                 yaxis = list(title = "Number of Crimes\n"))
+
+pl_freq
+```
+

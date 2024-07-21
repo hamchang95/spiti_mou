@@ -1,0 +1,87 @@
+########## SET UP ##########
+#-Clear enviornment
+rm(list = ls())
+
+#-Install / load packages
+pacman::p_load(sf, httr, jsonlite, here, leaflet, osmdata, tidyverse, data.table, rio)
+
+#--Increase timeout
+options(timeout = 300)
+
+### BOUNDARY ###
+#--Import boundary 
+ldn <- st_read(here("arc_lbb_website", "1_data", "9_geo", "London_Borough_Excluding_MHW.shp")) |>
+    st_transform(4326)
+
+#-Convert boundary polygon to a set of coordinates with lat & lng
+coords <- ldn |> 
+  st_coordinates() |> 
+  as.data.frame() |>
+  dplyr::select(X, Y)
+
+#plot(coords)
+
+#--Format coordinates for the POST call
+coords_list <- paste0(round(coords$Y,5),',',round(coords$X,5), collapse=':')
+
+### API ###
+#Refer to this page (https://data.police.uk/docs/method/crime-street/) for making POST calls
+#-A-PI paths
+pth <- 'https://data.police.uk/api/crimes-street/all-crime' #for street-level crime data
+
+#--Dummy to check latest dates
+dummy <- POST(url = pth, body = list(poly = coords_list[1])) |> content()
+dummy[length(dummy)]
+  #2024-05
+latest_month <- dummy[[1]][["month"]]
+
+#-Set periods of interest to pull  
+dt_list <- seq.Date(ym("2023-06"), ym("2024-05"), "months")
+dt_list <- as.character(dt_list) |> substr(1, 7)
+dt_list
+########## PULL DATA ########
+#-Define function to pull data
+get_data <- function(url, poly, date){
+  req <- list(); res <- list()
+  
+  for (i in seq_along(date)){
+    req[[i]] <- httr::POST(url = url,body = list(poly = poly, date = date[i]))
+    
+    if(req[[i]]$status_code == 200){
+      print("Request was successful")
+      
+      #--Get contents
+      res[[i]] <- httr::content(req[[i]], simplifyDataFrame=TRUE, flatten=TRUE)
+      
+    } else if (req[[i]]$status_code %in% c(422, 405)) {
+      print("Request failed due to an user's error")
+    } else if (req[[i]]$status_code == 544){
+      print("Request failed due to gateway timeout")
+    } else {"Other error"}
+  }
+  
+  return(res)
+}
+
+#-Pull st-level crime data 
+crime <- vector("list", 12)
+for (i in seq_along(crime)){
+    crime[[i]] <- get_data(url = pth, poly = coords_list, date = dt_list[[i]])
+}
+
+blank_id <- lapply(crime, length) |> as.numeric()
+blank_dt <- dt_list[blank_id == 0]
+blank_id
+crime[[5]] <- get_data(url = pth, poly = coords_list, date = dt_list[[5]])
+crime[[6]] <- get_data(url = pth, poly = coords_list, date = dt_list[[6]])
+crime[[7]] <- get_data(url = pth, poly = coords_list, date = dt_list[[7]])
+crime[[8]] <- get_data(url = pth, poly = coords_list, date = dt_list[[8]])
+crime[[9]] <- get_data(url = pth, poly = coords_list, date = dt_list[[9]])
+
+crime_df <- map(crime, ~data.table::rbindlist(.x))
+crime_df <- data.table::rbindlist(crime_df) |>
+    as.data.frame()
+
+
+######## EXPORT #######
+export(crime_df, here("3_output", paste0("crime_ldn_", dt_list[[1]], "_", dt_list[[12]], ".csv")))
